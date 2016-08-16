@@ -6,74 +6,96 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Message;
+import android.telephony.SmsManager;
 import android.telephony.SmsMessage;
 import android.util.Log;
 import android.view.View;
+import android.widget.Toast;
+
+import org.json.JSONException;
+import org.json.JSONObject;
+import org.json.JSONTokener;
+
 
 public class MainActivity extends Activity {
 
 	static final String LOG_TAG = "MainActivity";
-
-	SocketThread thread = null;
+	SocketThread socketThread;
 	IntentFilter smsFilter = new IntentFilter("android.provider.Telephony.SMS_RECEIVED");
-	int testMessageCount = 1;
+	SmsManager smsManager = SmsManager.getDefault();
 
 	@Override
 	protected void onCreate(Bundle savedInstanceState) {
 		super.onCreate(savedInstanceState);
 		setContentView(R.layout.activity_main);
 
-//		SocketThread.documents = new Hashtable<String, String>();
-//		readFile("askpanel.html");
-//		readFile("display.html");
+		Log.v(LOG_TAG, "onCreate");
+
+		socketThread = new SocketThread(new Handler() {
+			@Override
+			public void handleMessage(Message message) {
+				onMessageFromSocket(message);
+			}
+		});
+		socketThread.start();
 
 		registerReceiver(smsReceiver, smsFilter);
 	}
 
-//	private void readFile(String name) {
-//		try {
-//			InputStream stream = getAssets().open(name);
-//			byte[] buffer = new byte[stream.available()];
-//			//noinspection ResultOfMethodCallIgnored
-//			stream.read(buffer);
-//			String content = new String(buffer);
-//			SocketThread.documents.put("/" + name, content);
-//		} catch (IOException e) {
-//			e.printStackTrace();
-//		}
-//	}
-
-	protected void onStop() {
+	@Override
+	protected void onDestroy() {
+		Log.v(LOG_TAG, "onDestroy");
 		try {
+			socketThread.close();
 			unregisterReceiver(smsReceiver);
 		} catch (IllegalArgumentException ex) {
 			Log.d(LOG_TAG, "Couldn't unregister receiver.", ex);
 		}
 
-		super.onStop();
+		super.onDestroy();
 	}
 
-	public void buttonClick(View view) {
-		switch (view.getId()) {
-			case R.id.button_start:
-				if (thread == null) {
-					Log.d(LOG_TAG, "Starting server.");
-					thread = new SocketThread();
-					thread.start();
+	int testMessageCount = 1;
+	public void sendTestMessage(View view) {
+		try {
+			JSONObject json = new JSONObject();
+			json.put("mobileNumber", "0900 99909");
+			json.put("messageText", "test message " + testMessageCount++);
+			sendMessageToSocket("sms", json.toString());
+		} catch (JSONException ex) {
+			Log.e(LOG_TAG, "This is extremely unlikely.", ex);
+		}
+	}
+
+	private void onMessageFromSocket(Message message) {
+		Bundle data = message.getData();
+		String[] headers = data.getStringArray("headers");
+		String body = data.getString("body");
+		for (String h : headers) {
+			Log.d(LOG_TAG, h);
+		}
+		if (body != null) {
+			Log.d(LOG_TAG, body);
+			try {
+				JSONObject jsonObject = new JSONObject(new JSONTokener(body));
+				String mobileNumber = jsonObject.getString("mobileNumber");
+				String messageText = jsonObject.getString("messageText");
+				if (false) {
+					smsManager.sendTextMessage(mobileNumber, null, messageText, null, null);
+				} else {
+					Toast.makeText(this, "Send \"" + messageText + "\" to " + mobileNumber, Toast.LENGTH_SHORT).show();
 				}
-				break;
-			case R.id.button_stop:
-				if (thread != null) {
-					Log.d(LOG_TAG, "Stopping server.");
-					thread.close();
-					thread = null;
-				}
-				break;
-			case R.id.button_send:
-				if (thread != null) {
-					thread.sendMessage("Test message " + testMessageCount++);
-				}
-				break;
+			} catch (JSONException ex) {
+				Log.e(LOG_TAG, "This is extremely unlikely.", ex);
+			}
+		}
+	}
+
+	private void sendMessageToSocket(String eventType, String eventData) {
+		if (socketThread != null) {
+			socketThread.sendMessage(eventType, eventData);
 		}
 	}
 
@@ -85,11 +107,18 @@ public class MainActivity extends Activity {
 				return;
 			}
 
-			for (Object pdu : (Object[]) extras.get("pdus")) {
-				SmsMessage message = SmsMessage.createFromPdu((byte[]) pdu);
-				if (thread != null) {
-					thread.sendMessage(message.getMessageBody());
+			try {
+				for (Object pdu : (Object[]) extras.get("pdus")) {
+					SmsMessage sms = SmsMessage.createFromPdu((byte[]) pdu);
+					JSONObject json = new JSONObject();
+					json.put("mobileNumber", sms.getOriginatingAddress());
+					json.put("messageText", sms.getMessageBody());
+					sendMessageToSocket("sms", json.toString());
 				}
+			} catch (NullPointerException ex) {
+				Log.e(LOG_TAG, "This should never happen.", ex);
+			} catch (JSONException ex) {
+				Log.e(LOG_TAG, "This is extremely unlikely.", ex);
 			}
 		}
 	};
